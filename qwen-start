@@ -1,0 +1,97 @@
+#!/bin/bash
+# ============================================================
+#  Qwen3.8-27B 一键启动器（RTX8000 双卡服务器）
+#  用法:
+#    ./qwen-start single   单卡 TP=1 + MTP3（日常推荐, GPU1）
+#    ./qwen-start dual     双卡 TP=2 + MTP3（长上下文/大KV, GPU0+1）
+#  依赖: 本机 ~/.ssh/config 配置好 rtx8000 主机
+# ============================================================
+set -u
+MODE=${1:-single}
+
+case "$MODE" in
+  single)
+    RSCRIPT="/mnt/sdc/work/restart_qwen38_awq.sh"
+    SSCRIPT="/mnt/sdc/work/supervise_qwen38.sh"
+    SLOG="supervisor.log"
+    DESC="单卡 TP=1 · GPU1 · MTP3投机 · 多模态 · 前缀缓存 · 上下文208K"
+    TIMEOUT=480 ;;
+  dual)
+    RSCRIPT="/mnt/sdc/work/restart_qwen38_awq_tp2.sh"
+    SSCRIPT="/mnt/sdc/work/supervise_tp2.sh"
+    SLOG="supervisor_tp2.log"
+    DESC="双卡 TP=2 · GPU0+1 · MTP3投机 · 多模态 · 前缀缓存 · 上下文262K · KV池103万"
+    TIMEOUT=900 ;;   # 双卡有启动竞态重试, 给更长时间
+  *)
+    echo "用法: $0 [single|dual]"; exit 1;;
+esac
+
+echo "┌──────────────────────────────────────────────┐"
+echo "│ Qwen3.8-27B-AWQ-INT4 @ rtx8000  启动中       │"
+echo "│ 模式: $DESC"
+echo "└──────────────────────────────────────────────┘"
+
+ssh -o BatchMode=yes rtx8000 bash -s -- "$RSCRIPT" "$SSCRIPT" "$SLOG" "$TIMEOUT" "$DESC" <<'REMOTE'
+#!/bin/bash
+RSCRIPT=$1; SSCRIPT=$2; SLOG=$3; TIMEOUT=$4; DESC=$5
+rm -f /mnt/sdc/work/.qwen38_manual_stop
+pkill -9 -f "vllm.entrypoints.openai.api_server" 2>/dev/null
+pkill -9 -f "VLLM:" 2>/dev/null
+sleep 2
+
+setsid nohup bash "$SSCRIPT" > "/mnt/sdc/work/$SLOG" 2>&1 < /dev/null &
+echo "• 守护进程已拉起 ($SSCRIPT)"
+
+LAST=""
+DEADLINE=$(( $(date +%s) + TIMEOUT ))
+while [ $(date +%s) -lt $DEADLINE ]; do
+    L=$(ls -t /mnt/sdc/work/vllm-2080ti/run-logs/*.log 2>/dev/null | head -1)
+    ST=""
+    if ss -tln 2>/dev/null | grep -q ":8000 "; then
+        ST="READY"
+    elif [ -n "$L" ] && tail -20 "$L" 2>/dev/null | grep -qE "Capturing CUDA graphs ([0-9]+)%"; then
+        PCT=$(tail -20 "$L" | grep -oE "Capturing CUDA graphs [^|]*\| *([0-9]+)/[0-9]+" | grep -oE "[0-9]+/[0-9]+" | tail -1)
+        ST="捕获 CUDA 图 ${PCT:-进行中}"
+    elif [ -n "$L" ] && tail -30 "$L" 2>/dev/null | grep -q "KV cache size"; then
+        ST="KV 分配完成, 准备图捕获"
+    elif [ -n "$L" ] && grep -q "startup failed/hung" "/mnt/sdc/work/$SLOG" 2>/dev/null && [ "$(basename $SSCRIPT)" = "supervise_tp2.sh" ]; then
+        ST="启动竞态触发, 守护自动重试中"
+    elif nvidia-smi --query-gpu=memory.used --format=csv,noheader -i 1 2>/dev/null | awk '{exit !($1+0>2000)}'; then
+        ST="加载模型权重…"
+    else
+        ST="初始化引擎…"
+    fi
+    if [ "$ST" != "$LAST" ]; then
+        ELAPSED=$(( $(date +%s) - DEADLINE + TIMEOUT ))
+        printf '• [%03ds] %s\n' "$ELAPSED" "$ST"
+        LAST="$ST"
+    fi
+    [ "$ST" = "READY" ] && break
+    sleep 5
+done
+
+if [ "$ST" = "READY" ]; then
+    KVSZ=$(grep -oE "KV cache size: [0-9,]+" "$L" 2>/dev/null | head -1 | grep -oE "[0-9,]+")
+    APID=$(pgrep -f "vllm.entrypoints.openai.api_server" | head -1)
+    NL=$(ls -t /mnt/sdc/work/vllm-2080ti/run-logs/*.log | head -1)
+    cat <<SUMMARY
+
+╔══════════════════════════════════════════════╗
+║           ✅ 模型已就绪 READY                 ║
+╠══════════════════════════════════════════════╣
+║  API     : http://127.0.0.1:8000/v1          ║
+║  模型 ID : rtx8000-qwen38-27b-awq-int4       ║
+║  模式    : $DESC
+║  KV 池   : ${KVSZ:-N/A} tokens
+║  主进程  : PID $APID
+║  日志    : $NL
+║  关闭    : ~/RTX8000/qwen-stop               ║
+╚══════════════════════════════════════════════╝
+SUMMARY
+else
+    echo ""
+    echo "❌ ${TIMEOUT}s 内未就绪。排查:"
+    echo "   ssh rtx8000 'tail -40 \$(ls -t /mnt/sdc/work/vllm-2080ti/run-logs/*.log | head -1)'"
+    echo "   (守护模式会继续后台重试, 稍后可用 qwen-status 查看)"
+fi
+REMOTE

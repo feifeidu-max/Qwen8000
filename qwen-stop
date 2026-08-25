@@ -1,0 +1,6 @@
+#!/bin/bash
+# 关闭 rtx8000 上的 Qwen 模型并确认显存释放
+ssh -o BatchMode=yes rtx8000 'bash /mnt/sdc/work/stop_qwen38.sh'
+echo ""
+echo "GPU 当前状态:"
+ssh -o BatchMode=yes rtx8000 'nvidia-smi --query-gpu=index,memory.used --format=csv,noheader'

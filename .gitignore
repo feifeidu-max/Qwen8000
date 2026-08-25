@@ -1,0 +1,9 @@
+logs/
+tunnel.pid
+*.log
+*.backup*
+models.json.backup*
+bench200k-result.json
+stress256k-result.json
+.qwen38_manual_stop
+__pycache__/

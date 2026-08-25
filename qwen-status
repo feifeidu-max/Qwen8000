@@ -1,0 +1,18 @@
+#!/bin/bash
+# 一览: 隧道 / 远程模型进程 / GPU 显存 / API 可用性
+echo "=== 本地隧道 (WSL:8000) ==="
+ss -tln 2>/dev/null | grep -q ":8000 " && echo "✓ 隧道在监听" || echo "✗ 隧道断开 → ~/RTX8000/start-tunnel.sh"
+
+echo ""
+echo "=== 远程模型进程 ==="
+ssh -o BatchMode=yes -o ConnectTimeout=15 rtx8000 '
+pgrep -f "entrypoints.openai.api_serve[r]" >/dev/null && echo "✓ vLLM 运行中" || echo "✗ vLLM 未运行"
+ls /mnt/sdc/work/.qwen38_manual_stop >/dev/null 2>&1 && echo "○ 人工停止标记存在(守护不会拉起)" || true
+pgrep -f "work/supervis[e]" >/dev/null && echo "✓ 守护进程运行中" || echo "○ 守护进程未启动(可选)"
+nvidia-smi --query-gpu=index,memory.used --format=csv,noheader
+' 2>&1
+
+echo ""
+echo "=== API 可用性 ==="
+R=$(curl -s --max-time 8 http://127.0.0.1:8000/v1/models)
+if [ -n "$R" ]; then echo "✓ ${R:0:130}"; else echo "✗ API 不可达"; fi
