@@ -1,7 +1,14 @@
 #!/bin/bash
 # Qwen3.8-27B vLLM 停止脚本（含孤儿进程兜底清理）v2
 touch /mnt/sdc/work/.qwen38_manual_stop
-echo "== manual stop flag set; sending SIGKILL to vLLM processes =="
+echo "== manual stop flag set; graceful shutdown (SIGTERM first) =="
+pkill -TERM -f "vllm.entrypoints.openai.api_server" 2>/dev/null
+pkill -TERM -f "VLLM:" 2>/dev/null
+for i in 1 2 3 4 5 6 7 8 9 10; do
+    pgrep -f "vllm.entrypoints.openai.api_serve[r]" >/dev/null || break
+    sleep 2
+done
+echo "== escalating to SIGKILL for survivors =="
 pkill -9 -f "vllm.entrypoints.openai.api_server" 2>/dev/null
 pkill -9 -f "VLLM::EngineCore" 2>/dev/null
 pkill -9 -f "multiprocessing.resource_tracker" 2>/dev/null

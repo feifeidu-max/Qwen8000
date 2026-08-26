@@ -14,7 +14,7 @@ while true; do
     bash /mnt/sdc/work/restart_qwen38_awq.sh
     if ! ss -tln 2>/dev/null | grep -q ":8000 "; then
         echo "[supervisor] startup FAILED this cycle, retrying in 60s"
-        pkill -9 -f "vllm.entrypoints.openai.api_server" 2>/dev/null
+        pkill -TERM -f "vllm.entrypoints.openai.api_server" 2>/dev/null; sleep 8; pkill -9 -f "vllm.entrypoints.openai.api_server" 2>/dev/null
         pkill -9 -f "VLLM::EngineCore" 2>/dev/null
         sleep 60
         continue
@@ -29,7 +29,7 @@ while true; do
         exit 0
     fi
     echo "[supervisor] CRASH detected at $(date), cleaning and restarting in 15s"
-    pkill -9 -f "vllm.entrypoints.openai.api_server" 2>/dev/null
+    pkill -TERM -f "vllm.entrypoints.openai.api_server" 2>/dev/null; sleep 8; pkill -9 -f "vllm.entrypoints.openai.api_server" 2>/dev/null
     pkill -9 -f "VLLM::EngineCore" 2>/dev/null
     pkill -9 -f "multiprocessing.resource_tracker" 2>/dev/null
     LEFT=$(nvidia-smi --query-compute-apps=pid --format=csv,noheader -i 1)
